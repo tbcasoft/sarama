@@ -1042,6 +1042,8 @@ func (b *Broker) sendAndReceive(req protocolBody, res protocolBody) error {
 func (b *Broker) handleResponsePromise(req protocolBody, res protocolBody, promise *responsePromise) error {
 	select {
 	case buf := <-promise.packets:
+		b.lock.Lock()
+		defer b.lock.Unlock()
 		return versionedDecode(buf, res, req.version(), b.metricRegistry)
 	case err := <-promise.errors:
 		return err
