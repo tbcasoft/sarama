@@ -2,6 +2,7 @@ package sarama
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -131,6 +132,24 @@ const (
 	OffsetOldest int64 = -2
 )
 
+/*
+	Determines the log messages this Sarama client will spit out.
+	Sarama uses Golang's "log" library. "log" does not have a notion of log levels hence this
+	gloabl variable allows implementation of this feature without introducing log framework
+	to the Sarama codebase.
+
+	Value follows "logrus" standard:
+
+	0=PanicLevel *highest level of severity.  Should log and then call panic.
+	1=FatalLevel *should log and then call `logger.Exit(1)`. It will exit even if the logging level is set to Panic.
+	2=ErrorLevel *used for errors that should definitely be noted.
+	3=WarnLevel *Non-critical entries that deserve eyes.
+	4=InfoLevel *General operational entries about what's going on inside the application.
+	5=DebugLevel *Usually only enabled when debugging.
+	6=TraceLevel *Designates finer-grained informational events than the Debug.
+*/
+var LogLevel int = 3
+
 type client struct {
 	// updateMetaDataMs stores the time at which metadata was lasted updated.
 	// Note: this accessed atomically so must be the first word in the struct
@@ -165,7 +184,7 @@ type client struct {
 // and uses that broker to automatically fetch metadata on the rest of the kafka cluster. If metadata cannot
 // be retrieved from any of the given broker addresses, the client is not created.
 func NewClient(addrs []string, conf *Config) (Client, error) {
-	DebugLogger.Println("Initializing new client")
+	logMsg(5, "NewClient():  Initializing new client")
 
 	if conf == nil {
 		conf = NewConfig()
@@ -197,10 +216,15 @@ func NewClient(addrs []string, conf *Config) (Client, error) {
 		// do an initial fetch of all cluster metadata by specifying an empty list of topics
 		err := client.RefreshMetadata()
 		if err == nil {
+			logMsg(4, "NewClient():  successfully refreshed metadata for topics.")
+
 		} else if errors.Is(err, ErrLeaderNotAvailable) || errors.Is(err, ErrReplicaNotAvailable) || errors.Is(err, ErrTopicAuthorizationFailed) || errors.Is(err, ErrClusterAuthorizationFailed) {
 			// indicates that maybe part of the cluster is down, but is not fatal to creating the client
+			logMsg(2, "WARN:  NewClient():  error (leader not available) refreshing metadat for topics.  Not fatal to creating the client")
 			Logger.Println(err)
 		} else {
+			msg := fmt.Sprintf("ERROR:  NewClient():  exception refreshing metadata, return err and will CLOSE Sarama client.  Err: %v\"", err)
+			logMsg(2, msg)
 			close(client.closed) // we haven't started the background updater yet, so we have to do this manually
 			_ = client.Close()
 			return nil, err
@@ -208,9 +232,26 @@ func NewClient(addrs []string, conf *Config) (Client, error) {
 	}
 	go withRecover(client.backgroundMetadataUpdater)
 
-	DebugLogger.Println("Successfully initialized new client")
-
+	logMsg(5, "NewClient():  Successfully initialized new client")
 	return client, nil
+}
+
+/*
+A utility function to determine if a msg should be log.
+@loglevel value follows Logrus standard (0=PanicLevel, 1=FatalLevel, 2=ErrorLevel, 3=WarnLevel, 4=InfoLevel,
+5=DebugLevel, 6=TraceLevel)
+@msg actual msg to log
+*/
+func logMsg(loglevel int, msg string) {
+	if loglevel >= 2 {
+		Logger.Println(msg)
+	}
+	if loglevel >= 4 {
+		Logger.Println(msg)
+	}
+	if loglevel >= 5 {
+		DebugLogger.Println(msg)
+	}
 }
 
 func (client *client) Config() *Config {
