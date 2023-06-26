@@ -243,15 +243,24 @@ A utility function to determine if a msg should be log.
 @msg actual msg to log
 */
 func logMsg(loglevel int, msg string) {
-	if loglevel >= 2 {
+	if loglevel <= 1 {
 		Logger.Println(msg)
+		return
 	}
-	if loglevel >= 4 {
+	if loglevel <= 2 {
 		Logger.Println(msg)
+		return
 	}
-	if loglevel >= 5 {
-		DebugLogger.Println(msg)
+	if loglevel <= 3 {
+		Logger.Println(msg)
+		return
 	}
+	if loglevel <= 4 {
+		Logger.Println(msg)
+		return
+	}
+
+	DebugLogger.Println(msg)
 }
 
 func (client *client) Config() *Config {
@@ -281,7 +290,7 @@ func (client *client) Broker(brokerID int32) (*Broker, error) {
 
 func (client *client) InitProducerID() (*InitProducerIDResponse, error) {
 	brokerErrors := make([]error, 0)
-	for broker := client.anyBroker(); broker != nil; broker = client.anyBroker() {
+	for broker := client.anyBrokerRandom(); broker != nil; broker = client.anyBrokerRandom() {
 		var response *InitProducerIDResponse
 		req := &InitProducerIDRequest{}
 
@@ -290,7 +299,8 @@ func (client *client) InitProducerID() (*InitProducerIDResponse, error) {
 			return response, nil
 		} else {
 			// some error, remove that broker and try again
-			Logger.Printf("Client got error from broker %d when issuing InitProducerID : %v\n", broker.ID(), err)
+			msg := fmt.Sprintf("Client got error from broker %d when issuing InitProducerID, deregistering broker : %v\n", broker.ID(), err)
+			logMsg(2, msg)
 			_ = broker.Close()
 			brokerErrors = append(brokerErrors, err)
 			client.deregisterBroker(broker)
@@ -780,12 +790,21 @@ func (client *client) deregisterBroker(broker *Broker) {
 	if len(client.seedBrokers) > 0 && broker == client.seedBrokers[0] {
 		client.deadSeeds = append(client.deadSeeds, broker)
 		client.seedBrokers = client.seedBrokers[1:]
+		logMsg(5, "deregisterBroker():  shifted seed brokers slice by one.  New seed brokers are:")
+		if LogLevel >= 5 {
+			for _, v := range client.seedBrokers {
+				msg := fmt.Sprintf("deregisterBroker():  Seed broker: %s", v.Addr())
+				logMsg(5, msg)
+			}
+		}
+		logMsg(5, "deregisterBroker():  end new seed brokers slice.")
 	} else {
 		// we do this so that our loop in `tryRefreshMetadata` doesn't go on forever,
 		// but we really shouldn't have to; once that loop is made better this case can be
 		// removed, and the function generally can be renamed from `deregisterBroker` to
 		// `nextSeedBroker` or something
-		DebugLogger.Printf("client/brokers deregistered broker #%d at %s", broker.ID(), broker.Addr())
+		msg := fmt.Sprintf("client/brokers deregistered broker #%d at %s", broker.ID(), broker.Addr())
+		logMsg(5, msg)
 		delete(client.brokers, broker.ID())
 	}
 }
@@ -797,6 +816,46 @@ func (client *client) resurrectDeadBrokers() {
 	Logger.Printf("client/brokers resurrecting %d dead seed brokers", len(client.deadSeeds))
 	client.seedBrokers = append(client.seedBrokers, client.deadSeeds...)
 	client.deadSeeds = nil
+}
+
+/*
+Algorithm to return a backend broker to be use as endpoint for request.
+- Use the list of brokers (client.seedBrokers) we gave when creating the Sarama client.  List is fairly static
+and is updated based on narrow use cases.
+*Note:  the list can contain a bad broker or a broker can become suddenly bad.  Avoid stickiness to a broker (as it maybe be bad) by randomly
+choosing a broker from the list.
+- - If "client.seedBrokers" list is empty, use a broker within the "cluster metadata" list (client.brokers).
+*Note:  this list is dynamic and changes base on cluster metadata.
+*/
+func (client *client) anyBrokerRandom() *Broker {
+	client.lock.RLock()
+	defer client.lock.RUnlock()
+
+	// random selection so we don't hit the same bad broker everytime.
+	if len(client.seedBrokers) > 0 {
+		random := rand.New(rand.NewSource(time.Now().UnixNano()))
+		randomNums := random.Perm(len(client.seedBrokers))
+		chosenIndex := randomNums[0]
+		chosenBroker := client.seedBrokers[chosenIndex]
+		_ = chosenBroker.Open(client.conf)
+		msg := fmt.Sprintf("anyBrokerRandom(): returning broker at index %d, (addr: %s, id: %d) from seed list.",
+			chosenIndex, chosenBroker.Addr(), chosenBroker.ID())
+		logMsg(5, msg)
+		return chosenBroker
+	}
+
+	// not guaranteed to be random *or* deterministic
+	// do not need to be random as client.brokers is periodically updated via updateMetadata() --> registerBroker()
+	for _, broker := range client.brokers {
+		_ = broker.Open(client.conf)
+		msg := fmt.Sprintf("anyBrokerRandom(): returning broker (addr: %s, id: %d) from brokers list.",
+			broker.Addr(), broker.ID())
+		logMsg(5, msg)
+		return broker
+	}
+
+	logMsg(2, "ERROR: anyBrokerRandom():  Unable to find any broker!")
+	return nil
 }
 
 func (client *client) anyBroker() *Broker {
@@ -1009,7 +1068,8 @@ func (client *client) tryRefreshMetadata(topics []string, attemptsRemaining int,
 		if attemptsRemaining > 0 {
 			backoff := client.computeBackoff(attemptsRemaining)
 			if pastDeadline(backoff) {
-				Logger.Println("client/metadata skipping last retries as we would go past the metadata timeout")
+				msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata skipping last retries as we would go past the metadata timeout, returning error")
+				logMsg(2, msg)
 				return err
 			}
 			if backoff > 0 {
@@ -1020,22 +1080,25 @@ func (client *client) tryRefreshMetadata(topics []string, attemptsRemaining int,
 			if time.Since(time.Unix(t/1e3, 0)) < backoff {
 				return err
 			}
-			Logger.Printf("client/metadata retrying after %dms... (%d attempts remaining)\n", backoff/time.Millisecond, attemptsRemaining)
+			msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata retrying after %dms... (%d attempts remaining)\n", backoff/time.Millisecond, attemptsRemaining)
+			logMsg(5, msg)
 
 			return client.tryRefreshMetadata(topics, attemptsRemaining-1, deadline)
 		}
 		return err
 	}
 
-	broker := client.anyBroker()
+	broker := client.anyBrokerRandom()
 	brokerErrors := make([]error, 0)
-	for ; broker != nil && !pastDeadline(0); broker = client.anyBroker() {
+	for ; broker != nil && !pastDeadline(0); broker = client.anyBrokerRandom() {
 		allowAutoTopicCreation := client.conf.Metadata.AllowAutoTopicCreation
 		if len(topics) > 0 {
-			DebugLogger.Printf("client/metadata fetching metadata for %v from broker %s\n", topics, broker.addr)
+			msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata fetching metadata for %v from broker %s\n", topics, broker.addr)
+			logMsg(5, msg)
 		} else {
 			allowAutoTopicCreation = false
-			DebugLogger.Printf("client/metadata fetching metadata for all topics from broker %s\n", broker.addr)
+			msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata fetching metadata for all topics from broker %s\n", broker.addr)
+			logMsg(5, msg)
 		}
 
 		req := NewMetadataRequest(client.conf.Version, topics)
@@ -1053,7 +1116,8 @@ func (client *client) tryRefreshMetadata(topics []string, attemptsRemaining int,
 			// valid response, use it
 			shouldRetry, err := client.updateMetadata(response, allKnownMetaData)
 			if shouldRetry {
-				Logger.Println("client/metadata found some partitions to be leaderless")
+				msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata found some partitions to be leaderless, will retry")
+				logMsg(2, msg)
 				return retry(err) // note: err can be nil
 			}
 			return err
@@ -1063,21 +1127,25 @@ func (client *client) tryRefreshMetadata(topics []string, attemptsRemaining int,
 		} else if errors.As(err, &kerror) {
 			// if SASL auth error return as this _should_ be a non retryable err for all brokers
 			if errors.Is(err, ErrSASLAuthenticationFailed) {
-				Logger.Println("client/metadata failed SASL authentication")
+				msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata failed SASL authentication")
+				logMsg(2, msg)
 				return err
 			}
 
 			if errors.Is(err, ErrTopicAuthorizationFailed) {
-				Logger.Println("client is not authorized to access this topic. The topics were: ", topics)
+				msg := fmt.Sprintf("tryRefreshMetadata():  client is not authorized to access this topic, returning error. The topics were: %v", topics)
+				logMsg(2, msg)
 				return err
 			}
 			// else remove that broker and try again
-			Logger.Printf("client/metadata got error from broker %d while fetching metadata: %v\n", broker.ID(), err)
+			msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata got error from broker %d while fetching metadata, removing that broker and will try again: %v\n", broker.ID(), err)
+			logMsg(2, msg)
 			_ = broker.Close()
 			client.deregisterBroker(broker)
 		} else {
 			// some other error, remove that broker and try again
-			Logger.Printf("client/metadata got error from broker %d while fetching metadata: %v\n", broker.ID(), err)
+			msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata got error from broker %d while fetching metadata: %v\n", broker.ID(), err)
+			logMsg(2, msg)
 			brokerErrors = append(brokerErrors, err)
 			_ = broker.Close()
 			client.deregisterBroker(broker)
@@ -1086,11 +1154,13 @@ func (client *client) tryRefreshMetadata(topics []string, attemptsRemaining int,
 
 	error := Wrap(ErrOutOfBrokers, brokerErrors...)
 	if broker != nil {
-		Logger.Printf("client/metadata not fetching metadata from broker %s as we would go past the metadata timeout\n", broker.addr)
+		msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata not fetching metadata from broker %s as we would go past the metadata timeout, will retry.\n", broker.addr)
+		logMsg(2, msg)
 		return retry(error)
 	}
 
-	Logger.Println("client/metadata no available broker to send metadata request to")
+	msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata no available broker to send metadata request to, will retry")
+	logMsg(2, msg)
 	client.resurrectDeadBrokers()
 	return retry(error)
 }
@@ -1201,7 +1271,8 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 	retry := func(err error) (*FindCoordinatorResponse, error) {
 		if attemptsRemaining > 0 {
 			backoff := client.computeBackoff(attemptsRemaining)
-			Logger.Printf("client/coordinator retrying after %dms... (%d attempts remaining)\n", backoff/time.Millisecond, attemptsRemaining)
+			msg := fmt.Sprintf("client/coordinator retrying after %dms... (%d attempts remaining)\n", backoff/time.Millisecond, attemptsRemaining)
+			logMsg(5, msg)
 			time.Sleep(backoff)
 			return client.findCoordinator(coordinatorKey, coordinatorType, attemptsRemaining-1)
 		}
@@ -1209,8 +1280,9 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 	}
 
 	brokerErrors := make([]error, 0)
-	for broker := client.anyBroker(); broker != nil; broker = client.anyBroker() {
-		DebugLogger.Printf("client/coordinator requesting coordinator for %s from %s\n", coordinatorKey, broker.Addr())
+	for broker := client.anyBrokerRandom(); broker != nil; broker = client.anyBrokerRandom() {
+		msg := fmt.Sprintf("client/coordinator requesting coordinator for %s from %s\n", coordinatorKey, broker.Addr())
+		logMsg(5, msg)
 
 		request := new(FindCoordinatorRequest)
 		request.CoordinatorKey = coordinatorKey
@@ -1222,7 +1294,8 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 
 		response, err := broker.FindCoordinator(request)
 		if err != nil {
-			Logger.Printf("client/coordinator request to broker %s failed: %s\n", broker.Addr(), err)
+			msg := fmt.Sprintf("client/coordinator request to broker %s failed: %s\n", broker.Addr(), err)
+			logMsg(2, msg)
 
 			var packetEncodingError PacketEncodingError
 			if errors.As(err, &packetEncodingError) {
@@ -1236,35 +1309,41 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 		}
 
 		if errors.Is(response.Err, ErrNoError) {
-			DebugLogger.Printf("client/coordinator coordinator for %s is #%d (%s)\n", coordinatorKey, response.Coordinator.ID(), response.Coordinator.Addr())
+			msg := fmt.Sprintf("client/coordinator coordinator for %s is #%d (%s)\n", coordinatorKey, response.Coordinator.ID(), response.Coordinator.Addr())
+			logMsg(5, msg)
 			return response, nil
 		} else if errors.Is(response.Err, ErrConsumerCoordinatorNotAvailable) {
-			Logger.Printf("client/coordinator coordinator for %s is not available\n", coordinatorKey)
+			msg := fmt.Sprintf("client/coordinator coordinator for %s is not available\n", coordinatorKey)
+			logMsg(2, msg)
 
 			// This is very ugly, but this scenario will only happen once per cluster.
 			// The __consumer_offsets topic only has to be created one time.
 			// The number of partitions not configurable, but partition 0 should always exist.
 			if _, err := client.Leader("__consumer_offsets", 0); err != nil {
-				Logger.Printf("client/coordinator the __consumer_offsets topic is not initialized completely yet. Waiting 2 seconds...\n")
+				msg := fmt.Sprintf("client/coordinator the __consumer_offsets topic is not initialized completely yet. Waiting 2 seconds...\n")
+				logMsg(2, msg)
 				time.Sleep(2 * time.Second)
 			}
 			if coordinatorType == CoordinatorTransaction {
 				if _, err := client.Leader("__transaction_state", 0); err != nil {
-					Logger.Printf("client/coordinator the __transaction_state topic is not initialized completely yet. Waiting 2 seconds...\n")
+					msg := fmt.Sprintf("client/coordinator the __transaction_state topic is not initialized completely yet. Waiting 2 seconds...\n")
+					logMsg(2, msg)
 					time.Sleep(2 * time.Second)
 				}
 			}
 
 			return retry(ErrConsumerCoordinatorNotAvailable)
 		} else if errors.Is(response.Err, ErrGroupAuthorizationFailed) {
-			Logger.Printf("client was not authorized to access group %s while attempting to find coordinator", coordinatorKey)
+			msg := fmt.Sprintf("client was not authorized to access group %s while attempting to find coordinator", coordinatorKey)
+			logMsg(2, msg)
 			return retry(ErrGroupAuthorizationFailed)
 		} else {
 			return nil, response.Err
 		}
 	}
 
-	Logger.Println("client/coordinator no available broker to send consumer metadata request to")
+	msg := fmt.Sprintf("client/coordinator no available broker to send consumer metadata request to")
+	logMsg(2, msg)
 	client.resurrectDeadBrokers()
 	return retry(Wrap(ErrOutOfBrokers, brokerErrors...))
 }
