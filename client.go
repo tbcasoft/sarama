@@ -1271,7 +1271,7 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 	retry := func(err error) (*FindCoordinatorResponse, error) {
 		if attemptsRemaining > 0 {
 			backoff := client.computeBackoff(attemptsRemaining)
-			msg := fmt.Sprintf("client/coordinator retrying after %dms... (%d attempts remaining)\n", backoff/time.Millisecond, attemptsRemaining)
+			msg := fmt.Sprintf("findCoordinator():  client/coordinator retrying after %dms... (%d attempts remaining)\n", backoff/time.Millisecond, attemptsRemaining)
 			logMsg(5, msg)
 			time.Sleep(backoff)
 			return client.findCoordinator(coordinatorKey, coordinatorType, attemptsRemaining-1)
@@ -1281,7 +1281,7 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 
 	brokerErrors := make([]error, 0)
 	for broker := client.anyBrokerRandom(); broker != nil; broker = client.anyBrokerRandom() {
-		msg := fmt.Sprintf("client/coordinator requesting coordinator for %s from %s\n", coordinatorKey, broker.Addr())
+		msg := fmt.Sprintf("findCoordinator():  client/coordinator requesting coordinator for %s from %s\n", coordinatorKey, broker.Addr())
 		logMsg(5, msg)
 
 		request := new(FindCoordinatorRequest)
@@ -1294,7 +1294,7 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 
 		response, err := broker.FindCoordinator(request)
 		if err != nil {
-			msg := fmt.Sprintf("client/coordinator request to broker %s failed: %s\n", broker.Addr(), err)
+			msg := fmt.Sprintf("findCoordinator():  client/coordinator request to broker %s failed: %s\n", broker.Addr(), err)
 			logMsg(2, msg)
 
 			var packetEncodingError PacketEncodingError
@@ -1309,24 +1309,24 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 		}
 
 		if errors.Is(response.Err, ErrNoError) {
-			msg := fmt.Sprintf("client/coordinator coordinator for %s is #%d (%s)\n", coordinatorKey, response.Coordinator.ID(), response.Coordinator.Addr())
+			msg := fmt.Sprintf("findCoordinator():  client/coordinator coordinator for %s is #%d (%s)\n", coordinatorKey, response.Coordinator.ID(), response.Coordinator.Addr())
 			logMsg(5, msg)
 			return response, nil
 		} else if errors.Is(response.Err, ErrConsumerCoordinatorNotAvailable) {
-			msg := fmt.Sprintf("client/coordinator coordinator for %s is not available\n", coordinatorKey)
+			msg := fmt.Sprintf("findCoordinator():  client/coordinator coordinator for %s is not available\n", coordinatorKey)
 			logMsg(2, msg)
 
 			// This is very ugly, but this scenario will only happen once per cluster.
 			// The __consumer_offsets topic only has to be created one time.
 			// The number of partitions not configurable, but partition 0 should always exist.
 			if _, err := client.Leader("__consumer_offsets", 0); err != nil {
-				msg := fmt.Sprintf("client/coordinator the __consumer_offsets topic is not initialized completely yet. Waiting 2 seconds...\n")
+				msg := fmt.Sprintf("findCoordinator():  client/coordinator the __consumer_offsets topic is not initialized completely yet. Waiting 2 seconds...\n")
 				logMsg(2, msg)
 				time.Sleep(2 * time.Second)
 			}
 			if coordinatorType == CoordinatorTransaction {
 				if _, err := client.Leader("__transaction_state", 0); err != nil {
-					msg := fmt.Sprintf("client/coordinator the __transaction_state topic is not initialized completely yet. Waiting 2 seconds...\n")
+					msg := fmt.Sprintf("findCoordinator():  client/coordinator the __transaction_state topic is not initialized completely yet. Waiting 2 seconds...\n")
 					logMsg(2, msg)
 					time.Sleep(2 * time.Second)
 				}
@@ -1334,7 +1334,7 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 
 			return retry(ErrConsumerCoordinatorNotAvailable)
 		} else if errors.Is(response.Err, ErrGroupAuthorizationFailed) {
-			msg := fmt.Sprintf("client was not authorized to access group %s while attempting to find coordinator", coordinatorKey)
+			msg := fmt.Sprintf("findCoordinator():  client was not authorized to access group %s while attempting to find coordinator", coordinatorKey)
 			logMsg(2, msg)
 			return retry(ErrGroupAuthorizationFailed)
 		} else {
@@ -1342,7 +1342,7 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 		}
 	}
 
-	msg := fmt.Sprintf("client/coordinator no available broker to send consumer metadata request to")
+	msg := fmt.Sprintf("findCoordinator():  client/coordinator no available broker to send consumer metadata request to, will retry.")
 	logMsg(2, msg)
 	client.resurrectDeadBrokers()
 	return retry(Wrap(ErrOutOfBrokers, brokerErrors...))
