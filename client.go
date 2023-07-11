@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -117,6 +118,9 @@ type Client interface {
 
 	// Closed returns true if the client has already had Close called on it
 	Closed() bool
+
+	// SetLogLvl Set log level to control what is written to log file
+	SetLogLvl(lvl string) error
 }
 
 const (
@@ -139,16 +143,18 @@ const (
 	to the Sarama codebase.
 
 	Value follows "logrus" standard:
+	*Note: we transform the logrus standard log level string to a numeric value for easy comparison within
+	the code.
 
-	0=PanicLevel *highest level of severity.  Should log and then call panic.
-	1=FatalLevel *should log and then call `logger.Exit(1)`. It will exit even if the logging level is set to Panic.
-	2=ErrorLevel *used for errors that should definitely be noted.
-	3=WarnLevel *Non-critical entries that deserve eyes.
-	4=InfoLevel *General operational entries about what's going on inside the application.
-	5=DebugLevel *Usually only enabled when debugging.
-	6=TraceLevel *Designates finer-grained informational events than the Debug.
+	0=panic *highest level of severity.  Should log and then call panic.
+	1=fatal *should log and then call `logger.Exit(1)`. It will exit even if the logging level is set to Panic.
+	2=error *used for errors that should definitely be noted.
+	3=warn *Non-critical entries that deserve eyes.
+	4=info *General operational entries about what's going on inside the application.
+	5=debug *Usually only enabled when debugging.
+	6=trace *Designates finer-grained informational events than the Debug.
 */
-var LogLevel int = 3
+var logLevel int = 3
 
 type client struct {
 	// updateMetaDataMs stores the time at which metadata was lasted updated.
@@ -308,6 +314,43 @@ func (client *client) InitProducerID() (*InitProducerIDResponse, error) {
 	}
 
 	return nil, Wrap(ErrOutOfBrokers, brokerErrors...)
+}
+
+/*
+@lvl log level value follows "logrus" standard:
+		panic=PanicLevel *highest level of severity.  Should log and then call panic.
+		fatal=FatalLevel *should log and then call `logger.Exit(1)`. It will exit even if the logging level is set to Panic.
+		error=ErrorLevel *used for errors that should definitely be noted.
+		warn=WarnLevel *Non-critical entries that deserve eyes.
+		info=InfoLevel *General operational entries about what's going on inside the application.
+		debug=DebugLevel *Usually only enabled when debugging.
+		trace=TraceLevel *Designates finer-grained informational events than the Debug.
+*/
+func (client *client) SetLogLvl(lvl string) error {
+	if len(lvl) == 0 {
+		return errors.New("log level value is null")
+	}
+
+	switch level := strings.ToLower(lvl); level {
+	case "panic":
+		logLevel = 0
+	case "fatal":
+		logLevel = 1
+	case "error":
+		logLevel = 2
+	case "warn":
+		logLevel = 3
+	case "info":
+		logLevel = 4
+	case "debug":
+		logLevel = 5
+	case "trace":
+		logLevel = 6
+	default:
+		return fmt.Errorf("log level (%s) not supported", level)
+	}
+
+	return nil
 }
 
 func (client *client) Close() error {
@@ -791,7 +834,7 @@ func (client *client) deregisterBroker(broker *Broker) {
 		client.deadSeeds = append(client.deadSeeds, broker)
 		client.seedBrokers = client.seedBrokers[1:]
 		logMsg(5, "deregisterBroker():  shifted seed brokers slice by one.  New seed brokers are:")
-		if LogLevel >= 5 {
+		if logLevel >= 5 {
 			for _, v := range client.seedBrokers {
 				msg := fmt.Sprintf("deregisterBroker():  Seed broker: %s", v.Addr())
 				logMsg(5, msg)
