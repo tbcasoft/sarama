@@ -118,9 +118,6 @@ type Client interface {
 
 	// Closed returns true if the client has already had Close called on it
 	Closed() bool
-
-	// SetLogLvl Set log level to control what is written to log file
-	SetLogLvl(lvl string) error
 }
 
 const (
@@ -243,6 +240,46 @@ func NewClient(addrs []string, conf *Config) (Client, error) {
 }
 
 /*
+
+SetLogLvl - An indicator to all instantiation of Client of type of logs needed.
+
+@lvl log level value follows "logrus" standard:
+		panic=PanicLevel *highest level of severity.  Should log and then call panic.
+		fatal=FatalLevel *should log and then call `logger.Exit(1)`. It will exit even if the logging level is set to Panic.
+		error=ErrorLevel *used for errors that should definitely be noted.
+		warn=WarnLevel *Non-critical entries that deserve eyes.
+		info=InfoLevel *General operational entries about what's going on inside the application.
+		debug=DebugLevel *Usually only enabled when debugging.
+		trace=TraceLevel *Designates finer-grained informational events than the Debug.
+*/
+func SetLogLvl(lvl string) error {
+	if len(lvl) == 0 {
+		return errors.New("log level value is null")
+	}
+
+	switch level := strings.ToLower(lvl); level {
+	case "panic":
+		logLevel = 0
+	case "fatal":
+		logLevel = 1
+	case "error":
+		logLevel = 2
+	case "warn":
+		logLevel = 3
+	case "info":
+		logLevel = 4
+	case "debug":
+		logLevel = 5
+	case "trace":
+		logLevel = 6
+	default:
+		return fmt.Errorf("log level (%s) not supported", level)
+	}
+
+	return nil
+}
+
+/*
 A utility function to determine if a msg should be log.
 @loglevel value follows Logrus standard (0=PanicLevel, 1=FatalLevel, 2=ErrorLevel, 3=WarnLevel, 4=InfoLevel,
 5=DebugLevel, 6=TraceLevel)
@@ -314,43 +351,6 @@ func (client *client) InitProducerID() (*InitProducerIDResponse, error) {
 	}
 
 	return nil, Wrap(ErrOutOfBrokers, brokerErrors...)
-}
-
-/*
-@lvl log level value follows "logrus" standard:
-		panic=PanicLevel *highest level of severity.  Should log and then call panic.
-		fatal=FatalLevel *should log and then call `logger.Exit(1)`. It will exit even if the logging level is set to Panic.
-		error=ErrorLevel *used for errors that should definitely be noted.
-		warn=WarnLevel *Non-critical entries that deserve eyes.
-		info=InfoLevel *General operational entries about what's going on inside the application.
-		debug=DebugLevel *Usually only enabled when debugging.
-		trace=TraceLevel *Designates finer-grained informational events than the Debug.
-*/
-func (client *client) SetLogLvl(lvl string) error {
-	if len(lvl) == 0 {
-		return errors.New("log level value is null")
-	}
-
-	switch level := strings.ToLower(lvl); level {
-	case "panic":
-		logLevel = 0
-	case "fatal":
-		logLevel = 1
-	case "error":
-		logLevel = 2
-	case "warn":
-		logLevel = 3
-	case "info":
-		logLevel = 4
-	case "debug":
-		logLevel = 5
-	case "trace":
-		logLevel = 6
-	default:
-		return fmt.Errorf("log level (%s) not supported", level)
-	}
-
-	return nil
 }
 
 func (client *client) Close() error {
