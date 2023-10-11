@@ -158,9 +158,14 @@ func NewBroker(addr string) *Broker {
 // follow it by a call to Connected(). The only errors Open will return directly are ConfigurationError or
 // AlreadyConnected. If conf is nil, the result of NewConfig() is used.
 func (b *Broker) Open(conf *Config) error {
-	if !atomic.CompareAndSwapInt32(&b.opened, 0, 1) {
+	if !atomic.CompareAndSwapInt32(&b.opened, 0, 1) { //change state for *this broker to connected
 		return ErrAlreadyConnected
 	}
+
+	//== if here, attempt to connect to *this broker
+
+	msg := fmt.Sprintf("Open():  attempting connection to broker %s\n", b.addr)
+	logMsg(5, msg)
 
 	if conf == nil {
 		conf = NewConfig()
@@ -198,7 +203,7 @@ func (b *Broker) Open(conf *Config) error {
 		dialer := conf.getDialer()
 		b.conn, b.connErr = dialer.Dial("tcp", b.addr)
 		if b.connErr != nil {
-			Logger.Printf("Failed to connect to broker %s: %s\n", b.addr, b.connErr)
+			Logger.Printf("Open():  Failed to connect to broker %s: %s\n", b.addr, b.connErr)
 			b.conn = nil
 			atomic.StoreInt32(&b.opened, 0)
 			return
@@ -238,9 +243,9 @@ func (b *Broker) Open(conf *Config) error {
 			if b.connErr != nil {
 				err = b.conn.Close()
 				if err == nil {
-					DebugLogger.Printf("Closed connection to broker %s\n", b.addr)
+					DebugLogger.Printf("Open():  SASLv0 authentication failure Closed connection to broker %s\n", b.addr)
 				} else {
-					Logger.Printf("Error while closing connection to broker %s: %s\n", b.addr, err)
+					Logger.Printf("Open():  SASLv0 authentication failure Error while closing connection to broker %s: %s\n", b.addr, err)
 				}
 				b.conn = nil
 				atomic.StoreInt32(&b.opened, 0)
@@ -258,9 +263,9 @@ func (b *Broker) Open(conf *Config) error {
 				close(b.responses)
 				err = b.conn.Close()
 				if err == nil {
-					DebugLogger.Printf("Closed connection to broker %s\n", b.addr)
+					DebugLogger.Printf("Open():  SASLv1 authentication failure.  Closed connection to broker %s\n", b.addr)
 				} else {
-					Logger.Printf("Error while closing connection to broker %s: %s\n", b.addr, err)
+					Logger.Printf("Open():  SASLv1 authentication failureError while closing connection to broker %s: %s\n", b.addr, err)
 				}
 				b.conn = nil
 				atomic.StoreInt32(&b.opened, 0)

@@ -333,7 +333,7 @@ func (client *client) Broker(brokerID int32) (*Broker, error) {
 
 func (client *client) InitProducerID() (*InitProducerIDResponse, error) {
 	brokerErrors := make([]error, 0)
-	for broker := client.anyBrokerRandom(); broker != nil; broker = client.anyBrokerRandom() {
+	for broker := client.anyBroker(); broker != nil; broker = client.anyBroker() {
 		var response *InitProducerIDResponse
 		req := &InitProducerIDRequest{}
 
@@ -827,6 +827,10 @@ func (client *client) registerBroker(broker *Broker) {
 // deregisterBroker removes a broker from the seedsBroker list, and if it's
 // not the seedbroker, removes it from brokers map completely.
 func (client *client) deregisterBroker(broker *Broker) {
+
+	msg := fmt.Sprintf("deregisterBroker():  attempting to deregister broker: %s", broker.addr)
+	logMsg(5, msg)
+
 	client.lock.Lock()
 	defer client.lock.Unlock()
 
@@ -1131,16 +1135,16 @@ func (client *client) tryRefreshMetadata(topics []string, attemptsRemaining int,
 		return err
 	}
 
-	broker := client.anyBrokerRandom()
+	broker := client.anyBroker()
 	brokerErrors := make([]error, 0)
-	for ; broker != nil && !pastDeadline(0); broker = client.anyBrokerRandom() {
+	for ; broker != nil && !pastDeadline(0); broker = client.anyBroker() {
 		allowAutoTopicCreation := client.conf.Metadata.AllowAutoTopicCreation
 		if len(topics) > 0 {
-			msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata fetching metadata for %v from broker %s\n", topics, broker.addr)
+			msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata attempting to fetch metadata for %v from broker %s\n", topics, broker.addr)
 			logMsg(5, msg)
 		} else {
 			allowAutoTopicCreation = false
-			msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata fetching metadata for all topics from broker %s\n", broker.addr)
+			msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata attempting to fetch  metadata for all topics from broker %s\n", broker.addr)
 			logMsg(5, msg)
 		}
 
@@ -1155,15 +1159,35 @@ func (client *client) tryRefreshMetadata(topics []string, attemptsRemaining int,
 		var kerror KError
 		var packetEncodingError PacketEncodingError
 		if err == nil {
+			msg := fmt.Sprintf("tryRefreshMetadata():  fetched cluster metadata from broker %s.  Will now try to update our view of the cluster.", broker.addr)
+			logMsg(5, msg)
+
 			allKnownMetaData := len(topics) == 0
 			// valid response, use it
 			shouldRetry, err := client.updateMetadata(response, allKnownMetaData)
+
 			if shouldRetry {
-				msg := fmt.Sprintf("tryRefreshMetadata():  client/metadata found some partitions to be leaderless, will retry")
+				msg := fmt.Sprintf("tryRefreshMetadata():  unable to update our view of the clusgter metadata (found some partitions to be leaderless), will retry")
 				logMsg(2, msg)
 				return retry(err) // note: err can be nil
 			}
-			return err
+
+			if err == nil {
+				msg := fmt.Sprintf("tryRefreshMetadata():  updated our view of the cluster.")
+				logMsg(5, msg)
+
+			} else {
+
+				// If here, got an error updating our view of cluster metadata, remove that broker and try again
+				msg = fmt.Sprintf("tryRefreshMetadata():  client/metadata got error from broker %d updating our view of cluster metadata.  Closing connection, deregistering broker, and will try again with different broker.  Err:  %v\n", broker.ID(), err)
+				logMsg(2, msg)
+				_ = broker.Close()
+				client.deregisterBroker(broker)
+
+			}
+
+			return err //following original logic to always return err and defer to caller to handle value of err
+
 		} else if errors.As(err, &packetEncodingError) {
 			// didn't even send, return the error
 			return err
@@ -1323,7 +1347,7 @@ func (client *client) findCoordinator(coordinatorKey string, coordinatorType Coo
 	}
 
 	brokerErrors := make([]error, 0)
-	for broker := client.anyBrokerRandom(); broker != nil; broker = client.anyBrokerRandom() {
+	for broker := client.anyBroker(); broker != nil; broker = client.anyBroker() {
 		msg := fmt.Sprintf("findCoordinator():  client/coordinator requesting coordinator for %s from %s\n", coordinatorKey, broker.Addr())
 		logMsg(5, msg)
 
